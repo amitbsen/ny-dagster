@@ -8,6 +8,7 @@ from transforms.defs.assets.raw.building_footprints import building_footprints
 from transforms.defs.assets.derived.building_centroids import building_centroids
 from transforms.defs.assets.raw.landmarks import landmarks
 from transforms.defs.assets.derived.landmark_centroids import landmark_centroids
+from transforms.defs.assets.raw.sbs_certified_businesses import sbs_certified_businesses
 from transforms.defs.resources.pipeline_paths import PipelinePaths
 
 project_root = Path(__file__).parent
@@ -18,6 +19,7 @@ result = materialize(
         building_centroids,
         landmarks,
         landmark_centroids,
+        sbs_certified_businesses,
     ],
     resources={
         "pipeline_paths": PipelinePaths(
