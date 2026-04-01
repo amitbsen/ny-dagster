@@ -1,4 +1,4 @@
-"""Run the building footprints pipeline to populate DuckDB."""
+"""Run all pipeline assets to populate DuckDB."""
 
 from pathlib import Path
 
@@ -6,12 +6,19 @@ from dagster import materialize
 
 from transforms.defs.assets.raw.building_footprints import building_footprints
 from transforms.defs.assets.derived.building_centroids import building_centroids
+from transforms.defs.assets.raw.landmarks import landmarks
+from transforms.defs.assets.derived.landmark_centroids import landmark_centroids
 from transforms.defs.resources.pipeline_paths import PipelinePaths
 
 project_root = Path(__file__).parent
 
 result = materialize(
-    assets=[building_footprints, building_centroids],
+    assets=[
+        building_footprints,
+        building_centroids,
+        landmarks,
+        landmark_centroids,
+    ],
     resources={
         "pipeline_paths": PipelinePaths(
             uploads_dir=str(project_root / "src" / "uploads"),
