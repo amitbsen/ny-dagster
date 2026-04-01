@@ -1,7 +1,5 @@
 """Asset that loads NYC building footprints from CSV into DuckDB."""
 
-from __future__ import annotations
-
 from dagster import AssetExecutionContext, MetadataValue, asset
 
 from transforms.defs.resources.pipeline_paths import PipelinePaths
@@ -41,22 +39,22 @@ def building_footprints(
         CREATE TABLE {TABLE_NAME} AS
         SELECT
             ST_GeomFromText(the_geom) AS geometry,
-            "NAME",
-            "BIN",
-            "DOITT_ID",
-            CAST("SHAPE_AREA" AS DOUBLE) AS shape_area,
-            "BASE_BBL",
-            "OBJECTID",
+            "NAME" AS name,
+            "BIN" AS bin,
+            "DOITT_ID" AS doitt_id,
+            CAST(REPLACE("SHAPE_AREA", ',', '') AS DOUBLE) AS shape_area,
+            "BASE_BBL" AS base_bbl,
+            "OBJECTID" AS objectid,
             "Construction Year" AS construction_year,
             "Feature Code" AS feature_code,
             "Geometry Source" AS geometry_source,
-            "Ground Elevation" AS ground_elevation,
-            "Height Roof" AS height_roof,
+            CAST(REPLACE("Ground Elevation", ',', '') AS DOUBLE) AS ground_elevation,
+            CAST(REPLACE("Height Roof", ',', '') AS DOUBLE) AS height_roof,
             "LAST_EDITED_DATE" AS last_edited_date,
             "LAST_STATUS_TYPE" AS last_status_type,
             "Map Pluto BBL" AS map_pluto_bbl,
-            CAST("Length" AS DOUBLE) AS length
-        FROM read_csv('{csv_path}', auto_detect=true, header=true)
+            CAST(REPLACE("Length", ',', '') AS DOUBLE) AS length
+        FROM read_csv('{csv_path}', all_varchar=true, header=true)
         WHERE the_geom IS NOT NULL AND the_geom != ''
     """)
 

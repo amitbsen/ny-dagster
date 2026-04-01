@@ -1,7 +1,5 @@
 """Resource that provides file paths for the pipeline."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 from dagster import ConfigurableResource

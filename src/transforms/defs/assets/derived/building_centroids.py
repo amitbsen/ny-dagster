@@ -1,7 +1,5 @@
 """Asset that adds centroid points to building footprints."""
 
-from __future__ import annotations
-
 from dagster import AssetExecutionContext, MetadataValue, asset
 
 from transforms.defs.resources.pipeline_paths import PipelinePaths
