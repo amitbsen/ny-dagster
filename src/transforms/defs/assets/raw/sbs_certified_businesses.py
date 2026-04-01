@@ -38,10 +38,15 @@ def sbs_certified_businesses(
     con.execute(f"""
         CREATE TABLE {TABLE_NAME} AS
         SELECT
-            ST_Point(
-                CAST("Longitude" AS DOUBLE),
-                CAST("Latitude" AS DOUBLE)
-            ) AS geometry,
+            CASE
+                WHEN "Latitude" IS NOT NULL AND "Latitude" != ''
+                    AND "Longitude" IS NOT NULL AND "Longitude" != ''
+                THEN ST_Point(
+                    CAST("Longitude" AS DOUBLE),
+                    CAST("Latitude" AS DOUBLE)
+                )
+                ELSE NULL
+            END AS geometry,
             "Account_Number" AS account_number,
             "Vendor_Formal_Name" AS vendor_formal_name,
             "Vendor_DBA" AS vendor_dba,
@@ -99,10 +104,6 @@ def sbs_certified_businesses(
             "Census Tract (2020)" AS census_tract_2020,
             "Neighborhood Tabulation Area (NTA) (2020)" AS nta_2020
         FROM read_csv('{csv_path}', all_varchar=true, header=true)
-        WHERE "Latitude" IS NOT NULL
-            AND "Latitude" != ''
-            AND "Longitude" IS NOT NULL
-            AND "Longitude" != ''
     """)
 
     row_count = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
