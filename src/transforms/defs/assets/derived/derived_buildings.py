@@ -105,8 +105,17 @@ def derived_buildings(
         GROUP BY bin
     """)
 
-    # Join everything
-    context.log.info("Joining building footprints with aggregated data")
+    # Load boundary polygon for spatial filtering
+    boundary_path = pipeline_paths.uploads_path / "90_minute_radius_geojson.geojson"
+    context.log.info(f"Loading boundary polygon from {boundary_path}")
+    con.execute(f"""
+        CREATE OR REPLACE TEMP TABLE boundary AS
+        SELECT geom
+        FROM ST_Read('{boundary_path.as_posix()}')
+    """)
+
+    # Join everything, filtering to boundary
+    context.log.info("Joining building footprints with aggregated data (clipped to boundary)")
     con.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
     con.execute(f"""
         CREATE TABLE {TABLE_NAME} AS
@@ -128,8 +137,10 @@ def derived_buildings(
             s.sbs_ethnicities,
             s.sbs_naics_sectors
         FROM building_footprints b
+        CROSS JOIN boundary bnd
         LEFT JOIN landmarks_agg l ON b.bin = l.bin
         LEFT JOIN sbs_agg s ON b.bin = s.bin
+        WHERE ST_Within(ST_Centroid(b.geometry), bnd.geom)
     """)
 
     row_count = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
