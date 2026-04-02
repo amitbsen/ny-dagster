@@ -55,7 +55,6 @@ def derived_businesses(
                     THEN 'tier_2_strong_potential'
                 WHEN b.subcategory IN ('library', 'museum', 'coworking', 'artwork')
                     THEN 'tier_3_worth_exploring'
-                ELSE NULL
             END AS fit_category
         FROM (
 
@@ -169,6 +168,11 @@ def derived_businesses(
         WHERE ST_Within(sbs.geometry, bnd.geom)
 
         ) b
+        WHERE b.subcategory IN (
+            'cafe', 'gallery', 'books', 'florist', 'garden',
+            'bakery', 'bar', 'hotel', 'gift', 'community_centre',
+            'library', 'museum', 'coworking', 'artwork'
+        )
     """)
 
     row_count = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
