@@ -12,6 +12,7 @@ from transforms.defs.assets.raw.sbs_certified_businesses import sbs_certified_bu
 from transforms.defs.assets.raw.issued_licenses import issued_licenses
 from transforms.defs.assets.raw.retail_food_stores import retail_food_stores
 from transforms.defs.assets.raw.active_corporations import active_corporations
+from transforms.defs.assets.raw.osm_businesses import osm_businesses
 from transforms.defs.assets.derived.derived_buildings import derived_buildings
 from transforms.defs.resources.pipeline_paths import PipelinePaths
 
@@ -27,6 +28,7 @@ result = materialize(
         issued_licenses,
         retail_food_stores,
         active_corporations,
+        osm_businesses,
         derived_buildings,
     ],
     resources={
