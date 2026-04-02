@@ -46,6 +46,18 @@ def derived_businesses(
     con.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
     con.execute(f"""
         CREATE TABLE {TABLE_NAME} AS
+        SELECT
+            b.*,
+            CASE
+                WHEN b.subcategory IN ('cafe', 'gallery', 'books', 'florist', 'garden')
+                    THEN 'tier_1_high_fit'
+                WHEN b.subcategory IN ('bakery', 'bar', 'hotel', 'gift', 'community_centre')
+                    THEN 'tier_2_strong_potential'
+                WHEN b.subcategory IN ('library', 'museum', 'coworking', 'artwork')
+                    THEN 'tier_3_worth_exploring'
+                ELSE NULL
+            END AS fit_category
+        FROM (
 
         -- OSM businesses
         SELECT
@@ -155,6 +167,8 @@ def derived_businesses(
         FROM sbs_certified_businesses sbs
         CROSS JOIN boundary bnd
         WHERE ST_Within(sbs.geometry, bnd.geom)
+
+        ) b
     """)
 
     row_count = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
@@ -164,24 +178,34 @@ def derived_businesses(
     source_counts = con.execute(
         f"SELECT source, count(*) FROM {TABLE_NAME} GROUP BY source ORDER BY source"
     ).fetchall()
+    fit_counts = con.execute(
+        f"SELECT fit_category, count(*) FROM {TABLE_NAME} "
+        f"WHERE fit_category IS NOT NULL GROUP BY fit_category ORDER BY fit_category"
+    ).fetchall()
 
     con.close()
 
     source_meta = {
         f"source_{row[0]}": MetadataValue.int(row[1]) for row in source_counts
     }
+    fit_meta = {
+        f"fit_{row[0]}": MetadataValue.int(row[1]) for row in fit_counts
+    }
+    total_fit = sum(row[1] for row in fit_counts)
 
     context.log.info(
         f"Wrote {row_count} harmonized businesses to {pipeline_paths.db_path}:{TABLE_NAME} "
-        f"({geocoded_count} geocoded)"
+        f"({geocoded_count} geocoded, {total_fit} with exhibition fit category)"
     )
     context.add_output_metadata(
         {
             "num_businesses": MetadataValue.int(row_count),
             "num_geocoded": MetadataValue.int(geocoded_count),
+            "num_with_fit_category": MetadataValue.int(total_fit),
             "num_sources": MetadataValue.int(len(source_counts)),
             "table": MetadataValue.text(TABLE_NAME),
             "duckdb_path": MetadataValue.path(str(pipeline_paths.db_path)),
             **source_meta,
+            **fit_meta,
         }
     )
