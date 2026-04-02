@@ -10,6 +10,8 @@ from transforms.defs.assets.raw.landmarks import landmarks
 from transforms.defs.assets.derived.landmark_centroids import landmark_centroids
 from transforms.defs.assets.raw.sbs_certified_businesses import sbs_certified_businesses
 from transforms.defs.assets.raw.issued_licenses import issued_licenses
+from transforms.defs.assets.raw.retail_food_stores import retail_food_stores
+from transforms.defs.assets.raw.active_corporations import active_corporations
 from transforms.defs.assets.derived.derived_buildings import derived_buildings
 from transforms.defs.resources.pipeline_paths import PipelinePaths
 
@@ -23,6 +25,8 @@ result = materialize(
         landmark_centroids,
         sbs_certified_businesses,
         issued_licenses,
+        retail_food_stores,
+        active_corporations,
         derived_buildings,
     ],
     resources={
