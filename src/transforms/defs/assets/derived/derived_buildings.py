@@ -9,8 +9,8 @@ TABLE_NAME = "derived_buildings"
 
 @asset(
     group_name="derived",
-    description="Building footprints enriched with landmark status and SBS certified business data.",
-    deps=["building_footprints", "landmarks", "sbs_certified_businesses"],
+    description="Building footprints enriched with landmark status and SBS certified business data, filtered to exhibition-relevant venues.",
+    deps=["building_footprints", "landmarks", "sbs_certified_businesses", "derived_businesses"],
 )
 def derived_buildings(
     context: AssetExecutionContext,
@@ -114,8 +114,20 @@ def derived_buildings(
         FROM ST_Read('{boundary_path.as_posix()}')
     """)
 
-    # Join everything, filtering to boundary
-    context.log.info("Joining building footprints with aggregated data (clipped to boundary)")
+    # Find buildings that contain at least one exhibition-relevant business
+    context.log.info("Identifying buildings with exhibition-relevant businesses via spatial join")
+    con.execute("""
+        CREATE OR REPLACE TEMP TABLE matched_bins AS
+        SELECT DISTINCT b.bin
+        FROM building_footprints b
+        INNER JOIN derived_businesses biz
+            ON ST_Within(biz.geometry, b.geometry)
+    """)
+    matched_count = con.execute("SELECT count(*) FROM matched_bins").fetchone()[0]
+    context.log.info(f"Found {matched_count} buildings containing exhibition-relevant businesses")
+
+    # Join everything, filtering to matched buildings only
+    context.log.info("Joining building footprints with aggregated data (exhibition venues only)")
     con.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
     con.execute(f"""
         CREATE TABLE {TABLE_NAME} AS
@@ -137,10 +149,9 @@ def derived_buildings(
             s.sbs_ethnicities,
             s.sbs_naics_sectors
         FROM building_footprints b
-        CROSS JOIN boundary bnd
+        INNER JOIN matched_bins m ON b.bin = m.bin
         LEFT JOIN landmarks_agg l ON b.bin = l.bin
         LEFT JOIN sbs_agg s ON b.bin = s.bin
-        WHERE ST_Within(ST_Centroid(b.geometry), bnd.geom)
     """)
 
     row_count = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
