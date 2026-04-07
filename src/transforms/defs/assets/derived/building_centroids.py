@@ -1,8 +1,15 @@
-"""Asset that adds centroid points to building footprints."""
+"""Asset: building footprints with an added centroid point column.
+
+Inputs : building_footprints (DuckDB table)
+Output : building_footprints_centroids (DuckDB table)
+"""
+
 
 from dagster import AssetExecutionContext, MetadataValue, asset
 
-from transforms.defs.resources.pipeline_paths import PipelinePaths
+from transforms.defs.resources.duckdb_io import DuckdbResource
+from transforms.lib.duckdb_rel import from_table, write_table
+from transforms.logic.transforms.compute_centroid import compute_centroid
 
 TABLE_NAME = "building_footprints_centroids"
 SOURCE_TABLE = "building_footprints"
@@ -10,50 +17,28 @@ SOURCE_TABLE = "building_footprints"
 
 @asset(
     group_name="derived",
-    description="Building footprints with an additional centroid point column computed from geometry.",
+    description="Building footprints with an added centroid point column.",
     deps=["building_footprints"],
 )
 def building_centroids(
     context: AssetExecutionContext,
-    pipeline_paths: PipelinePaths,
+    duckdb: DuckdbResource,
 ) -> None:
-    """Compute centroid for each building footprint and store as a new table.
+    with duckdb.connection() as con:
+        rel = from_table(con, SOURCE_TABLE).pipe(compute_centroid)
+        row_count = write_table(con, rel, TABLE_NAME)
+        sample_row = con.execute(
+            f"SELECT ST_AsText(centroid) FROM {TABLE_NAME} "
+            "WHERE centroid IS NOT NULL LIMIT 1"
+        ).fetchone()
 
-    Args:
-        context: Dagster execution context.
-        pipeline_paths: Resource providing database path.
-    """
-    import duckdb
-
-    con = duckdb.connect(str(pipeline_paths.db_path))
-    con.install_extension("spatial")
-    con.load_extension("spatial")
-
-    con.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
-    con.execute(f"""
-        CREATE TABLE {TABLE_NAME} AS
-        SELECT
-            *,
-            ST_Centroid(geometry) AS centroid
-        FROM {SOURCE_TABLE}
-    """)
-
-    row_count = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
-    sample = con.execute(f"""
-        SELECT ST_AsText(centroid) FROM {TABLE_NAME} WHERE centroid IS NOT NULL LIMIT 1
-    """).fetchone()
-    con.close()
-
-    sample_centroid = sample[0] if sample else "N/A"
-
-    context.log.info(
-        f"Wrote {row_count} buildings with centroids to {pipeline_paths.db_path}:{TABLE_NAME}"
-    )
+    sample = sample_row[0] if sample_row else "N/A"
+    context.log.info(f"Wrote {row_count} buildings with centroids to {TABLE_NAME}")
     context.add_output_metadata(
         {
             "num_buildings": MetadataValue.int(row_count),
             "table": MetadataValue.text(TABLE_NAME),
-            "duckdb_path": MetadataValue.path(str(pipeline_paths.db_path)),
-            "sample_centroid": MetadataValue.text(sample_centroid),
+            "duckdb_path": MetadataValue.path(str(duckdb.db_path)),
+            "sample_centroid": MetadataValue.text(sample),
         }
     )

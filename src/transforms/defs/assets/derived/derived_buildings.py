@@ -1,171 +1,105 @@
-"""Asset that enriches building footprints with landmark and SBS business data."""
+"""Asset: building footprints enriched with landmark and SBS business data.
+
+Inputs : building_footprints, landmarks, sbs_certified_businesses,
+         derived_businesses, 90_minute_radius_geojson.geojson
+Output : derived_buildings (DuckDB table)
+"""
+
 
 from dagster import AssetExecutionContext, MetadataValue, asset
 
+from transforms.defs.resources.duckdb_io import DuckdbResource
 from transforms.defs.resources.pipeline_paths import PipelinePaths
+from transforms.logic.transforms.aggregate_landmarks_by_bin import (
+    aggregate_landmarks_by_bin,
+)
+from transforms.logic.transforms.aggregate_sbs_by_bin import aggregate_sbs_by_bin
+from transforms.logic.transforms.find_buildings_containing_businesses import (
+    find_buildings_containing_businesses,
+)
+from transforms.logic.transforms.spatial_within_boundary import load_boundary
 
 TABLE_NAME = "derived_buildings"
+BOUNDARY_FILENAME = "90_minute_radius_geojson.geojson"
 
 
 @asset(
     group_name="derived",
-    description="Building footprints enriched with landmark status and SBS certified business data, filtered to exhibition-relevant venues.",
-    deps=["building_footprints", "landmarks", "sbs_certified_businesses", "derived_businesses"],
+    description="Building footprints enriched with landmark status and SBS business data, filtered to exhibition-relevant venues.",
+    deps=[
+        "building_footprints",
+        "landmarks",
+        "sbs_certified_businesses",
+        "derived_businesses",
+    ],
 )
 def derived_buildings(
     context: AssetExecutionContext,
     pipeline_paths: PipelinePaths,
+    duckdb: DuckdbResource,
 ) -> None:
-    """Join building footprints with landmarks and SBS businesses by BIN.
+    boundary_path = pipeline_paths.uploads_path / BOUNDARY_FILENAME
 
-    Produces one row per building with additional columns from landmarks
-    (historic district, style, architect, materials) and SBS businesses
-    (certification count, types, business names).
+    with duckdb.connection() as con:
+        context.log.info("Aggregating landmarks by BIN")
+        aggregate_landmarks_by_bin(con).create("landmarks_agg")
 
-    Args:
-        context: Dagster execution context.
-        pipeline_paths: Resource providing database path.
-    """
-    import duckdb
+        context.log.info("Aggregating SBS businesses by BIN")
+        aggregate_sbs_by_bin(con).create("sbs_agg")
 
-    con = duckdb.connect(str(pipeline_paths.db_path))
-    con.install_extension("spatial")
-    con.load_extension("spatial")
+        context.log.info(f"Loading boundary polygon from {boundary_path}")
+        load_boundary(con, geojson_path=boundary_path.as_posix())
 
-    # Pre-aggregate landmarks to one row per BIN
-    context.log.info("Aggregating landmarks by BIN")
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE landmarks_agg AS
-        SELECT
-            bin,
-            TRUE AS is_landmark,
-            STRING_AGG(DISTINCT historic_district, '; ')
-                FILTER (WHERE historic_district IS NOT NULL
-                    AND TRIM(historic_district) != ''
-                    AND historic_district != '0')
-                AS historic_districts,
-            STRING_AGG(DISTINCT style_primary, '; ')
-                FILTER (WHERE style_primary IS NOT NULL
-                    AND TRIM(style_primary) != ''
-                    AND style_primary != '0'
-                    AND style_primary != 'Not determined')
-                AS styles,
-            STRING_AGG(DISTINCT architect_builder, '; ')
-                FILTER (WHERE architect_builder IS NOT NULL
-                    AND TRIM(architect_builder) != ''
-                    AND architect_builder != '0'
-                    AND architect_builder != 'Not determined')
-                AS architects,
-            STRING_AGG(DISTINCT material_primary, '; ')
-                FILTER (WHERE material_primary IS NOT NULL
-                    AND TRIM(material_primary) != ''
-                    AND material_primary != '0'
-                    AND material_primary != 'Not determined')
-                AS materials,
-            STRING_AGG(DISTINCT use_original, '; ')
-                FILTER (WHERE use_original IS NOT NULL
-                    AND TRIM(use_original) != ''
-                    AND use_original != '0'
-                    AND use_original != 'Not determined')
-                AS original_uses,
-            BOOL_OR(landmark_original != '0' AND landmark_original != '')
-                AS is_individual_landmark,
-            COUNT(*) AS landmark_entry_count
-        FROM landmarks
-        WHERE bin IS NOT NULL AND TRIM(bin) != ''
-        GROUP BY bin
-    """)
+        context.log.info("Identifying buildings containing exhibition-relevant businesses")
+        find_buildings_containing_businesses(con).create("matched_bins")
+        matched_row = con.execute("SELECT count(*) FROM matched_bins").fetchone()
+        matched = int(matched_row[0]) if matched_row else 0
+        context.log.info(f"Found {matched} buildings containing relevant businesses")
 
-    # Pre-aggregate SBS businesses to one row per BIN
-    context.log.info("Aggregating SBS businesses by BIN")
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE sbs_agg AS
-        SELECT
-            bin,
-            TRUE AS has_sbs_business,
-            COUNT(*) AS sbs_business_count,
-            STRING_AGG(DISTINCT certification, '; ')
-                FILTER (WHERE certification IS NOT NULL
-                    AND TRIM(certification) != '')
-                AS sbs_certification_types,
-            STRING_AGG(DISTINCT vendor_formal_name, '; ')
-                FILTER (WHERE vendor_formal_name IS NOT NULL
-                    AND TRIM(vendor_formal_name) != '')
-                AS sbs_business_names,
-            STRING_AGG(DISTINCT ethnicity, '; ')
-                FILTER (WHERE ethnicity IS NOT NULL
-                    AND TRIM(ethnicity) != '')
-                AS sbs_ethnicities,
-            STRING_AGG(DISTINCT naics_sector, '; ')
-                FILTER (WHERE naics_sector IS NOT NULL
-                    AND TRIM(naics_sector) != '')
-                AS sbs_naics_sectors
-        FROM sbs_certified_businesses
-        WHERE bin IS NOT NULL AND TRIM(bin) != ''
-        GROUP BY bin
-    """)
+        context.log.info("Joining building footprints with aggregated data")
+        con.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
+        con.execute(
+            f"""
+            CREATE TABLE {TABLE_NAME} AS
+            SELECT
+                b.*,
+                ST_Centroid(b.geometry) AS centroid,
+                COALESCE(l.is_landmark, FALSE) AS is_landmark,
+                l.historic_districts,
+                l.styles AS landmark_styles,
+                l.architects AS landmark_architects,
+                l.materials AS landmark_materials,
+                l.original_uses AS landmark_original_uses,
+                COALESCE(l.is_individual_landmark, FALSE) AS is_individual_landmark,
+                COALESCE(l.landmark_entry_count, 0) AS landmark_entry_count,
+                COALESCE(s.has_sbs_business, FALSE) AS has_sbs_business,
+                COALESCE(s.sbs_business_count, 0) AS sbs_business_count,
+                s.sbs_certification_types,
+                s.sbs_business_names,
+                s.sbs_ethnicities,
+                s.sbs_naics_sectors
+            FROM building_footprints b
+            INNER JOIN matched_bins m ON b.bin = m.bin
+            LEFT JOIN landmarks_agg l ON b.bin = l.bin
+            LEFT JOIN sbs_agg s ON b.bin = s.bin
+            """
+        )
 
-    # Load boundary polygon for spatial filtering
-    boundary_path = pipeline_paths.uploads_path / "90_minute_radius_geojson.geojson"
-    context.log.info(f"Loading boundary polygon from {boundary_path}")
-    con.execute(f"""
-        CREATE OR REPLACE TEMP TABLE boundary AS
-        SELECT geom
-        FROM ST_Read('{boundary_path.as_posix()}')
-    """)
+        row_row = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()
+        landmark_row = con.execute(
+            f"SELECT count(*) FROM {TABLE_NAME} WHERE is_landmark = TRUE"
+        ).fetchone()
+        sbs_row = con.execute(
+            f"SELECT count(*) FROM {TABLE_NAME} WHERE has_sbs_business = TRUE"
+        ).fetchone()
+        col_count = len(con.execute(f"DESCRIBE {TABLE_NAME}").fetchall())
 
-    # Find buildings that contain at least one exhibition-relevant business
-    context.log.info("Identifying buildings with exhibition-relevant businesses via spatial join")
-    con.execute("""
-        CREATE OR REPLACE TEMP TABLE matched_bins AS
-        SELECT DISTINCT b.bin
-        FROM building_footprints b
-        INNER JOIN derived_businesses biz
-            ON ST_Within(biz.geometry, b.geometry)
-    """)
-    matched_count = con.execute("SELECT count(*) FROM matched_bins").fetchone()[0]
-    context.log.info(f"Found {matched_count} buildings containing exhibition-relevant businesses")
-
-    # Join everything, filtering to matched buildings only
-    context.log.info("Joining building footprints with aggregated data (exhibition venues only)")
-    con.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
-    con.execute(f"""
-        CREATE TABLE {TABLE_NAME} AS
-        SELECT
-            b.*,
-            ST_Centroid(b.geometry) AS centroid,
-            COALESCE(l.is_landmark, FALSE) AS is_landmark,
-            l.historic_districts,
-            l.styles AS landmark_styles,
-            l.architects AS landmark_architects,
-            l.materials AS landmark_materials,
-            l.original_uses AS landmark_original_uses,
-            COALESCE(l.is_individual_landmark, FALSE) AS is_individual_landmark,
-            COALESCE(l.landmark_entry_count, 0) AS landmark_entry_count,
-            COALESCE(s.has_sbs_business, FALSE) AS has_sbs_business,
-            COALESCE(s.sbs_business_count, 0) AS sbs_business_count,
-            s.sbs_certification_types,
-            s.sbs_business_names,
-            s.sbs_ethnicities,
-            s.sbs_naics_sectors
-        FROM building_footprints b
-        INNER JOIN matched_bins m ON b.bin = m.bin
-        LEFT JOIN landmarks_agg l ON b.bin = l.bin
-        LEFT JOIN sbs_agg s ON b.bin = s.bin
-    """)
-
-    row_count = con.execute(f"SELECT count(*) FROM {TABLE_NAME}").fetchone()[0]
-    landmark_count = con.execute(
-        f"SELECT count(*) FROM {TABLE_NAME} WHERE is_landmark = TRUE"
-    ).fetchone()[0]
-    sbs_count = con.execute(
-        f"SELECT count(*) FROM {TABLE_NAME} WHERE has_sbs_business = TRUE"
-    ).fetchone()[0]
-    col_count = len(con.execute(f"DESCRIBE {TABLE_NAME}").fetchall())
-    con.close()
+    row_count = int(row_row[0]) if row_row else 0
+    landmark_count = int(landmark_row[0]) if landmark_row else 0
+    sbs_count = int(sbs_row[0]) if sbs_row else 0
 
     context.log.info(
-        f"Wrote {row_count} enriched buildings to {pipeline_paths.db_path}:{TABLE_NAME} "
+        f"Wrote {row_count} enriched buildings to {TABLE_NAME} "
         f"({landmark_count} landmarks, {sbs_count} with SBS businesses)"
     )
     context.add_output_metadata(
@@ -175,6 +109,6 @@ def derived_buildings(
             "buildings_with_landmark": MetadataValue.int(landmark_count),
             "buildings_with_sbs": MetadataValue.int(sbs_count),
             "table": MetadataValue.text(TABLE_NAME),
-            "duckdb_path": MetadataValue.path(str(pipeline_paths.db_path)),
+            "duckdb_path": MetadataValue.path(str(duckdb.db_path)),
         }
     )

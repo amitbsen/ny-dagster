@@ -13,29 +13,80 @@ This repo uses Dagster's `load_from_defs_folder()` pattern. All assets, resource
 src/transforms/
   __init__.py
   definitions.py          # Entry point: @definitions + load_from_defs_folder()
-  defs/                   # One module per asset group or job
-    __init__.py
-    assets/               # Asset definitions grouped by domain
-      __init__.py
-      *.py                # Individual asset modules
-    resources/            # Resource definitions (IO managers, API clients, configs)
-      __init__.py
-      *.py
-    jobs/                 # Job definitions
-      __init__.py
-      *.py
-    schedules/            # Schedule definitions
-      __init__.py
-      *.py
-    sensors/              # Sensor definitions
-      __init__.py
-      *.py
-  lib/                    # Third-party library wrappers and adapters
-  utils/                  # Pure utility functions (no Dagster imports)
-  types/                  # Shared type definitions and TypedDicts
-tests/                    # All tests mirror the src/ structure
-  __init__.py
+  defs/
+    assets/
+      raw/                # One file per input source (CSV / API -> DuckDB)
+      derived/            # One file per derived dataset
+    resources/
+      pipeline_paths.py   # Filesystem paths
+      duckdb_io.py        # DuckdbResource (connection + spatial extension)
+  lib/
+    duckdb_rel.py         # .pipe() monkey-patch, from_csv, from_table, write_table
+  logic/
+    transforms/           # Pure (DuckDBPyRelation -> DuckDBPyRelation) functions
+    expressions/          # Reusable SQL expression fragments and CASE builders
+  schemas/
+    column_maps.py        # Source -> target rename dicts + numeric cast dicts
+  utils/                  # Non-Dagster helpers (snake_case, overpass client, ...)
+tests/
+  conftest.py             # In-memory DuckDB + spatial fixture
+  test_logic/             # One test per logic transform
 ```
+
+## Transform pattern
+
+Every dataset is produced by exactly one thin asset file. The asset body only **declares I/O and composes `.pipe()` steps** — no inline SQL longer than one line, no renaming logic, no computed expressions. All real work lives in `logic/`:
+
+- **`logic/transforms/*.py`** — pure functions with signature `(rel: DuckDBPyRelation, *, **kwargs) -> DuckDBPyRelation`. Side-effect free, no logging, no connection handling. Composable via `.pipe()`.
+- **`logic/expressions/*.py`** — reusable SQL expression fragments (CASE builders, SELECT projections) as module constants.
+- **`schemas/column_maps.py`** — each dataset's source->target rename dict and numeric cast dict lives here, one block per asset.
+
+### The canonical asset template
+
+```python
+from dagster import AssetExecutionContext, MetadataValue, asset
+from transforms.defs.resources.duckdb_io import DuckdbResource
+from transforms.defs.resources.pipeline_paths import PipelinePaths
+from transforms.lib.duckdb_rel import from_csv, write_table
+from transforms.logic.transforms.rename_columns import rename_columns
+from transforms.logic.transforms.cast_columns import cast_columns
+from transforms.logic.transforms.parse_wkt_geometry import parse_wkt_geometry
+from transforms.logic.transforms.filter_non_null_geometry import filter_non_null_geometry
+from transforms.schemas.column_maps import LANDMARKS, LANDMARKS_CASTS
+
+@asset(group_name="raw", description="...")
+def landmarks(
+    context: AssetExecutionContext,
+    pipeline_paths: PipelinePaths,
+    duckdb: DuckdbResource,
+) -> None:
+    csv_path = pipeline_paths.uploads_path / "Landmarks.csv"
+    with duckdb.connection() as con:
+        rel = (
+            from_csv(con, csv_path.as_posix())
+            .pipe(rename_columns, columns=LANDMARKS)
+            .pipe(cast_columns, casts=LANDMARKS_CASTS)
+            .pipe(parse_wkt_geometry, source_col="the_geom")
+            .pipe(filter_non_null_geometry)
+        )
+        row_count = write_table(con, rel, "landmarks")
+    context.add_output_metadata({"num_rows": MetadataValue.int(row_count)})
+```
+
+### Adding a new dataset
+
+1. Add a source->target column map dict to `schemas/column_maps.py` (plus a casts dict if any columns need numeric conversion).
+2. Create a single file in `defs/assets/raw/<dataset_name>.py` or `defs/assets/derived/<dataset_name>.py`.
+3. Compose the work as a `.pipe()` chain using existing `logic/transforms/` functions.
+4. If a transform step doesn't exist yet, add a new pure function to `logic/transforms/` and a unit test in `tests/test_logic/`. Do not write the logic inline in the asset.
+
+### Rules
+
+- Asset bodies must not contain column-rename SQL, CASE statements, or multi-line SQL string literals. Extract to `logic/`.
+- Always acquire DuckDB connections via `DuckdbResource.connection()`. Never call `duckdb.connect()` from an asset.
+- Every new `logic/transforms/*.py` function gets a unit test under `tests/test_logic/`.
+- Numeric casts go through `cast_columns` so commas and blanks are tolerated uniformly.
+- Geometry columns are always named `geometry`; centroids are always named `centroid`.
 
 
 ## Asset Design Rules
