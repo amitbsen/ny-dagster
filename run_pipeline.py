@@ -14,6 +14,7 @@ from transforms.defs.assets.raw.retail_food_stores import retail_food_stores
 from transforms.defs.assets.raw.active_corporations import active_corporations
 from transforms.defs.assets.raw.osm_businesses import osm_businesses
 from transforms.defs.assets.derived.derived_buildings import derived_buildings
+from transforms.defs.assets.derived.derived_businesses import derived_businesses
 from transforms.defs.resources.pipeline_paths import PipelinePaths
 
 project_root = Path(__file__).parent
@@ -30,6 +31,7 @@ result = materialize(
         active_corporations,
         osm_businesses,
         derived_buildings,
+        derived_businesses,
     ],
     resources={
         "pipeline_paths": PipelinePaths(

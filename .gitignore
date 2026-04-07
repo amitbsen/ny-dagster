@@ -201,3 +201,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local data and uploads
+data/
+src/uploads/*.csv
